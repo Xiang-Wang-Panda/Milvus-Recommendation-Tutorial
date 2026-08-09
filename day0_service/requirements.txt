@@ -1,0 +1,8 @@
+fastapi>=0.110
+uvicorn[standard]>=0.27
+pymilvus>=2.5
+milvus-lite>=2.4
+requests>=2.31       # 只给 seed.py / data 加载脚本用
+jieba>=0.42          # TEXT_ANALYZER=chinese 才需要
+# EMBED_BACKEND=st 换真模型时才需要（默认 hash 后端零下载）：
+# sentence-transformers>=2.6

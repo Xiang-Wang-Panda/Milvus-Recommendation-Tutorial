@@ -1,0 +1,194 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Day 0 搜索 / 推荐</title>
+<!-- 内联 favicon，免得浏览器去请求 /favicon.ico 拿个 404 塞进控制台 -->
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='15'>🔍</text></svg>">
+<style>
+  :root { --bg:#0f1115; --card:#181b22; --line:#2a2f3a; --fg:#e6e8ee; --dim:#8b93a5; --acc:#5b9dff; }
+  * { box-sizing: border-box; }
+  body { margin:0; padding:24px; background:var(--bg); color:var(--fg);
+         font:14px/1.5 -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif; }
+  h1 { font-size:18px; margin:0 0 4px; }
+  h1 small { color:var(--dim); font-weight:400; font-size:13px; margin-left:8px; }
+  .grid { display:grid; gap:16px; grid-template-columns:repeat(auto-fit, minmax(380px, 1fr)); margin-top:16px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:8px; padding:14px 16px; }
+  .card h2 { font-size:14px; margin:0 0 10px; }
+  .card h2 span { color:var(--dim); font-weight:400; }
+  .row { display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-bottom:8px; }
+  input, select, button { background:#0f1218; color:var(--fg); border:1px solid var(--line);
+                          border-radius:5px; padding:6px 9px; font:inherit; }
+  input { flex:1; min-width:90px; }
+  input[type=number] { flex:0 0 70px; }
+  button { background:var(--acc); color:#04101f; border:0; font-weight:600; cursor:pointer; }
+  button:active { transform:translateY(1px); }
+  label { color:var(--dim); font-size:13px; }
+  .out { margin-top:10px; font-size:13px; }
+  .hit { display:flex; gap:10px; padding:5px 0; border-top:1px solid var(--line); }
+  .hit .s { color:var(--acc); font-variant-numeric:tabular-nums; flex:0 0 56px; text-align:right; }
+  .note { color:var(--dim); font-size:12px; margin:6px 0; }
+  .err { color:#ff7b72; }
+  .tag { display:inline-block; background:#222834; color:var(--dim); border-radius:4px;
+         padding:1px 6px; margin:0 4px 4px 0; font-size:12px; }
+</style>
+</head>
+<body>
+
+<h1>Day 0 搜索 / 推荐 <small id="health">…</small></h1>
+
+<div class="grid">
+
+  <!-- 1. 搜索 -->
+  <div class="card">
+    <h2>1. 搜索 <span>BM25 走 sparse，vector 走 dense</span></h2>
+    <div class="row">
+      <input id="q" placeholder="star wars" value="star wars">
+      <select id="mode"><option value="bm25">bm25</option><option value="vector">vector</option></select>
+      <input type="number" id="topk" value="5" min="1">
+      <button onclick="doSearch()">搜索</button>
+    </div>
+    <div class="row">
+      <input id="filter" placeholder='filter，如 category == "Comedy" and year >= 1995'>
+    </div>
+    <div class="out" id="searchOut"></div>
+  </div>
+
+  <!-- 2. 推荐 -->
+  <div class="card">
+    <h2>2. 推荐 <span>先画像，再排除历史推荐</span></h2>
+    <div class="row">
+      <select id="recUser"></select>
+      <input type="number" id="recTopk" value="5" min="1">
+      <button onclick="doRecommend()">推荐</button>
+    </div>
+    <div class="out" id="recOut"></div>
+  </div>
+
+  <!-- 3. 相似用户 -->
+  <div class="card">
+    <h2>3. 相似用户 <span>users 集合里做 user→user 最近邻</span></h2>
+    <div class="row">
+      <select id="simUser"></select>
+      <input type="number" id="simTopk" value="5" min="1">
+      <button onclick="doSimilar()">找相似</button>
+    </div>
+    <div class="out" id="simOut"></div>
+  </div>
+
+  <!-- 4. 加电影 -->
+  <div class="card">
+    <h2>4. 加电影 <span>写完立刻搜它</span></h2>
+    <div class="row">
+      <input id="ni" placeholder="id" value="m99001" style="flex:0 0 90px">
+      <input id="nt" placeholder="标题 + 类型词" value="Interstellar (2014) Adventure Drama Sci-Fi">
+    </div>
+    <div class="row">
+      <input id="nc" placeholder="category" value="Sci-Fi" style="flex:0 0 110px">
+      <input type="number" id="ny" placeholder="year" value="2014">
+      <button onclick="addItem()">写入并搜索</button>
+    </div>
+    <div class="out" id="itemOut"></div>
+  </div>
+
+</div>
+
+<script>
+// ---------- 小工具 ----------
+async function api(path, body) {
+  const opt = body === undefined ? {} : {method:"POST", headers:{"content-type":"application/json"},
+                                        body: JSON.stringify(body)};
+  let r;
+  try {
+    r = await fetch(path, opt);
+  } catch (e) {
+    // fetch 直接抛（"Failed to fetch"）= 压根没连上后端，跟接口返回什么无关。
+    // 两个常见原因：页面是 file:// 打开的（相对路径会被解析成 file:///health）；服务没在跑或还在启动。
+    throw new Error(location.protocol === "file:"
+      ? `页面是用 file:// 打开的，相对路径请求不到后端。改从 http://127.0.0.1:8000/ 打开（后端 GET / 会托管这个页面）`
+      : `连不上后端 ${location.origin}${path}：确认服务在跑（uvicorn main:app），st 后端首次启动要等模型加载完`);
+  }
+  const j = await r.json();
+  if (!r.ok) throw new Error(j.detail || JSON.stringify(j));
+  return j;
+}
+const esc = s => String(s).replace(/[&<>]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]));
+const hits = list => list.length
+  ? list.map(h => `<div class="hit"><span class="s">${h.score.toFixed(3)}</span><span>${esc(h.text)}</span></div>`).join("")
+  : `<div class="note">没有结果</div>`;
+
+// 每个面板自己管自己的输出区，异常直接显示出来，不用开控制台
+function panel(id, render) {
+  const box = document.getElementById(id);
+  return async (...args) => {
+    box.innerHTML = `<div class="note">请求中…</div>`;
+    try { box.innerHTML = await render(...args); }
+    catch (e) { box.innerHTML = `<div class="note err">${esc(e.message)}</div>`; }
+  };
+}
+
+// ---------- 1. 搜索 ----------
+const doSearch = panel("searchOut", async () => {
+  const body = {q: q.value, top_k: +topk.value, mode: mode.value, filter: filter.value};
+  const r = await api("/search", body);
+  return `<div class="note">mode=${body.mode}${body.filter ? " · filter 生效" : ""}</div>` + hits(r);
+});
+
+// 下拉是空的时候别去拼 /users/ 那种空 id 的 URL，直接说清楚该干什么
+function needUser(sel) {
+  if (sel.value) return sel.value;
+  throw new Error("还没有用户。用户塔要从历史物品向量算，先灌数据：python seed.py http://127.0.0.1:8000");
+}
+
+// ---------- 2. 推荐：先画像，再推荐 ----------
+const doRecommend = panel("recOut", async () => {
+  const uid = needUser(recUser);
+  const p = await api("/users/" + uid);            // 画像
+  const rec = await api("/recommend", {user_id: uid, top_k: +recTopk.value});
+  return `<div class="note">${uid} · prefer=<b>${esc(p.prefer)}</b> · 历史 ${p.history.length} 部（推荐已排除）</div>`
+       + p.history.slice(0, 5).map(h => `<span class="tag">${esc(h.text)}</span>`).join("")
+       + `<div class="note">↓ 推荐</div>` + hits(rec);
+});
+
+// ---------- 3. 相似用户 ----------
+const doSimilar = panel("simOut", async () => {
+  const uid = needUser(simUser);
+  const r = await api(`/similar-users?user_id=${encodeURIComponent(uid)}&top_k=${+simTopk.value}`, {});
+  return r.length
+    ? r.map(u => `<div class="hit"><span class="s">${u.score.toFixed(3)}</span>
+                  <span>${esc(u.user_id)} <span class="tag">${esc(u.prefer)}</span></span></div>`).join("")
+    : `<div class="note">没有结果</div>`;
+});
+
+// ---------- 4. 加电影：写入后立刻搜到 ----------
+const addItem = panel("itemOut", async () => {
+  const item = {id: ni.value, text: nt.value, category: nc.value, year: +ny.value};
+  await api("/items", [item]);
+  // 回查用标题（第一个括号之前），不要带类型词：BM25 的 idf 是按 segment 算的，刚写入的行
+  // 单独在一个新 segment 里，"Adventure" 这种常见词在它那儿 idf≈0，会被老数据压到后面去。
+  const q = (item.text.split("(")[0] || item.text).trim();
+  const r = await api("/search", {q, top_k: 3});
+  await loadHealth();
+  const found = r.some(h => h.id === item.id);
+  return `<div class="note">已 upsert ${esc(item.id)} · 用「${esc(q)}」回查${found ? "命中 ✓" : "没命中 ✗"}</div>`
+       + hits(r);
+});
+
+// ---------- 启动 ----------
+async function loadHealth() {
+  const h = await api("/health");
+  health.textContent = `${h.items} 物品 · ${h.users} 用户 · analyzer=${h.analyzer} · embed=${h.embed}`;
+  if (!h.items) health.textContent += " —— 空库，先跑 python seed.py http://127.0.0.1:8000";
+}
+async function loadUsers() {
+  const us = await api("/users/sample?n=50");
+  const opts = us.map(u =>
+    `<option value="${u.user_id}">${u.user_id} · ${esc(u.prefer)}</option>`).join("");
+  recUser.innerHTML = simUser.innerHTML = opts || `<option value="">（还没有用户）</option>`;
+}
+loadHealth().catch(e => health.textContent = e.message);
+loadUsers();
+</script>
+</body>
+</html>
