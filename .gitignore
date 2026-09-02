@@ -1,5 +1,7 @@
 # ---- 虚拟环境（1.4G，torch 占了大半）----
-.venv/
+# 不带斜杠：day2_service/.venv 是指向 day1_service/.venv 的符号链接，
+# 带斜杠的模式只匹配真目录，符号链接会被漏掉
+.venv
 venv/
 env/
 
@@ -14,7 +16,8 @@ env/
 # ---- 数据集：下载的和生成的，都是派生物 ----
 # 前缀 **/ 是必须的：带斜杠的模式会锚定到本文件所在目录，不加就只匹配仓库根下的 data/
 # MovieLens-1M 原始数据 24M，load_movielens.py 会重新下
-**/data/ml-1m/
+# 不带斜杠：day1/day2 下的 ml-1m 是指向 day0_service/data/ml-1m 的符号链接
+**/data/ml-1m
 # products.csv / users.csv 由 load_movielens.py 生成
 **/data/*.csv
 
@@ -28,12 +31,21 @@ __pycache__/
 
 # ---- 日志和临时产物 ----
 *.log
+# docker compose 起的 Milvus standalone 的数据盘（etcd/minio/milvus）
+**/volumes/
 
 # ---- Claude Code 的本机配置（记的是这台机器上的授权，不该共享）----
 .claude/settings.local.json
+.claude/settings.json
 
 # ---- 编辑器 / 系统 ----
 .DS_Store
 .idea/
 .vscode/
 *.swp
+
+# 凭据,绝不提交
+.env
+.env.*
+*/.env
+*/.env.*

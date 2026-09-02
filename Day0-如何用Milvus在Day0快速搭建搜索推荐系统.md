@@ -1,4 +1,4 @@
-# 用 Milvus 在 Day 0 搭一套搜索 + 推荐
+# Day 0:如何用 Milvus 快速搭一套搜索 + 推荐
 
 很多产品都要"能搜、能推",但不是每个团队都有搜索推荐的人。这篇给这类工程师:一台笔记本,零部署、零 GPU、零训练、零 API Key,把搜索、推荐、相似用户三件事跑起来。
 
@@ -9,10 +9,10 @@
 ## Day 0 / Day 1 / Day 2
 
 - **Day 0(本篇)** —— 本机跑通。Milvus Lite 就是一个本地文件,零部署;嵌入先用哈希,零下载;加一个单文件前端能当面演示。目标是把链路和接口定下来,不追指标。
-- **Day 1 —— 上生产、扛住量。** `MILVUS_URI` 从本地文件换成 Milvus 集群或 Zilliz Cloud 的地址,建 HNSW/IVF 索引调延迟和召回,补上标量过滤、分区、多租户隔离和监控。存储层代码不动,换连接串就行。
-- **Day 2 —— 搜得更准、推得更丰富。** 升级 embedding;推荐从纯内容改成多路召回(内容 + 协同过滤,用 RRF 融合);分组去重保多样性;top-K 交给 LLM 精排。这些都加在召回层上,业务代码基本不重写。
+- **Day 1 —— 上生产、扛住量。** `MILVUS_URI` 换成集群地址,schema 一次定型(哪些字段灌完就锁死),把"循环里查库"改成批量,按路径选一致性级别,补上多租户隔离和告警。存储层代码不动,换连接串只占 14 行。索引参数这一档量不出差别,所以保持 `AUTOINDEX` —— Day 1 的产出是"什么时候该调、什么时候不该调"的判据,不是一组调好的参数。
+- **Day 2 —— 给推荐加一路召回。** 同一个集合上加一个 `cf` 字段存物品共现,推荐就从一路变成两路,稳定性跟着上来:新物品没有行为数据、某一路的服务超时,都还有另一路兜着,不至于返回空。顺带用 `hybrid_search` 把两路融合在服务端、用 `group_by_field` 做分组去重、试一次 LLM 精排。加一路召回等于加一个字段,架构不动。
 
-再往上追精度,是训练式和生成式推荐的范围(SASRec、LightGCN、TIGER、HSTU、OneRec),不在这个系列里。
+再往上追精度要引入训练式的推荐模型,那是另一个系列的事,不在这三篇里。
 
 ## 架构
 
@@ -66,14 +66,12 @@
 ```text
 用 FastAPI + Milvus Lite（pymilvus 的 MilvusClient）做一个关键词搜索服务。
 
-store.py：集合 items，字段 id(VARCHAR 主键)、text(VARCHAR，开 analyzer)、
-sparse(SPARSE_FLOAT_VECTOR)；开 dynamic field，让 category、year 这类字段原样存、能过滤。
-sparse 不要自己算，用 Milvus 原生 BM25 Function 从 text 生成，索引用 SPARSE_INVERTED_INDEX。
-analyzer 用环境变量 TEXT_ANALYZER 选（chinese=jieba / english / standard），
-连接串用 MILVUS_URI，默认本地文件 ./milvus.db。
+store.py：集合 items，字段 id、text、sparse。text 开 analyzer，用环境变量 TEXT_ANALYZER
+选中英文；开 dynamic field，让 category、year 这类字段原样存、能过滤。
+sparse 不要自己算，用 Milvus 原生的 BM25 Function 从 text 生成。
+连接串走 MILVUS_URI，默认本地文件。
 
-main.py：POST /items 批量 upsert、POST /search {q, top_k, filter}、GET /health。
-顺带写 requirements.txt。
+main.py：批量写入、搜索、健康检查三个接口。顺带写 requirements.txt。
 ```
 
 验证。三件事:写得进、搜得出、过滤生效。
@@ -116,19 +114,14 @@ BM25 的稀疏向量由 Milvus 的 `Function` 从 `text` 自动生成,写入侧�
 ```text
 加向量能力。
 
-embedding.py：encode(texts) 和 dim()。先只做 hash 后端——把词散列到 512 维再归一化，
-不下任何模型。留好换模型的位置。
+embedding.py：encode(texts) 和 dim()。先只做 hash 后端——把词散列到一个固定维度再归一化，
+不下任何模型，留好换真模型的位置。维度别挑 384，跟常见小模型撞上了换模型时发现不了。
 
-items 加一个 dense 字段（AUTOINDEX + COSINE），/search 加 mode 参数：bm25 走 sparse，
-vector 走 dense。
+items 加一个 dense 字段，/search 加 mode 参数选走 sparse 还是 dense。
+再建一个 users 表：兴趣向量 = 历史物品向量的均值，预先算好存进去。
+接口补上：推荐（给 user_id 用存好的向量、给 item_ids 就现算）、相似用户、画像、采样。
 
-新集合 users：user_id 主键、dense、history、prefer。
-POST /users：兴趣向量 = 历史物品 dense 向量求均值，预算好存进去。
-POST /recommend：给 user_id 就用存好的向量搜商品塔并排除历史，给 item_ids 就现算均值。
-POST /similar-users：在 users 里做 user→user 最近邻。
-GET /users/{id} 返回画像，GET /users/sample 给前端用。
-
-用户塔依赖商品向量，要先灌完商品再建。
+用户塔依赖商品向量，所以要先灌完商品再建。
 ```
 
 验证。Step 1 建的表没有 `dense` 字段,先删库再起:
@@ -179,12 +172,10 @@ curl -s -X POST "localhost:8000/similar-users?user_id=u1&top_k=1"
 
 ```text
 data/load_movielens.py：下载 MovieLens-1M，转成两个 csv。
-products.csv：一部电影一行，id=m<MovieID>，text=标题+类型词，category=主类型，year=年份。
-users.csv：user_id=u<UserID>，history=评分>=4 的电影按时间取最近 50 部用 | 连接，
-prefer=历史里最多的类型。
+products.csv 一部电影一行（id、标题+类型词、主类型、年份），
+users.csv 一个用户一行（id、看过的电影 id 列表、最常看的类型）。
 
-seed.py：读 csv，分批 POST /items，再 POST /users，
-最后跑一次搜索、推荐、相似用户，把结果打出来当冒烟测试。
+seed.py：读 csv 分批灌进去，最后跑一次搜索、推荐、相似用户当冒烟测试。
 ```
 
 验证:
@@ -233,9 +224,8 @@ BM25 那两行在同一份数据上可以稳定复现。推荐和相似用户是
 提示词:
 
 ```text
-embedding.py 加一个 st 后端：sentence-transformers 本地模型，
-默认 BAAI/bge-small-en-v1.5，用 EMBED_BACKEND=st 切换，EMBED_MODEL 指定模型。
-维度跟 hash 不一样时自动重建集合。
+embedding.py 加一个 st 后端：sentence-transformers 本地模型，用环境变量切换和指定模型。
+维度和现在的对不上时自动重建集合。
 ```
 
 验证:
@@ -284,9 +274,8 @@ Day 0 最好的演示是当着人写一条,立刻搜出来。
 提示词:
 
 ```text
-写 static/index.html，单文件，vanilla JS，无框架无构建，后端 GET / 托管。四个面板：
-搜索（选 bm25/vector）、推荐（选用户 → 先显示画像再显示推荐）、相似用户、
-加电影（写入后立刻搜到它）。样式简单能截图就行。
+给这个服务配个网页，能演示搜索、推荐、相似用户这几个功能，
+最好还能现场加一部电影马上搜到它。不用框架，简单点就行，能截图演示就够。
 ```
 
 验证:打开 [http://127.0.0.1:8000/](http://127.0.0.1:8000/),一个写面板 + 三个读面板跑一遍。同样的事用命令行也能验,写完立刻读得到:

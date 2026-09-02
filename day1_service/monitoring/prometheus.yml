@@ -1,0 +1,33 @@
+# 两个抓取目标：Milvus 自己的指标（9091）和服务侧的埋点（8000/metrics）。
+# 只看 Milvus 不够——用户感知到的慢可能全在 embedding 那一步，跟 Milvus 无关。
+global:
+  scrape_interval: 15s
+
+scrape_configs:
+  - job_name: milvus
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["milvus:9091"]
+
+  - job_name: day1-service
+    metrics_path: /metrics
+    static_configs:
+      # 服务跑在宿主机上，容器里要走 host.docker.internal
+      - targets: ["host.docker.internal:8000"]
+
+# 上线前必须有告警的五个指标（表达式按本机 job 名写，抄进 Grafana / Alertmanager 时改标签）：
+#
+# 1. 查询 p99 延迟   histogram_quantile(0.99, sum by (le, route) (rate(app_request_seconds_bucket{route=~"/search|/recommend"}[5m]))) > 0.5
+#    用户直接感受到的东西。定 SLO 之前先跑 bench.py index 看自己数据上的地板在哪。
+#
+# 2. 查询错误率     sum(rate(app_requests_total{status=~"5.."}[5m])) / sum(rate(app_requests_total[5m])) > 0.01
+#    分母要带上全部请求，只数 5xx 的绝对值在低流量时段会一直"正常"。
+#
+# 3. collection 是否 loaded   milvus_querynode_collection_num == 0
+#    集合被 release 掉（重启、内存不够被踢）之后所有查询直接报错，这是最像"它挂了"的信号。
+#
+# 4. compaction 积压   milvus_datacoord_compaction_task_num{status="executing"} > 0 持续 30m
+#    积压意味着小 segment 越堆越多：查询要扫的段变多、BM25 的 idf 也一直是碎的。
+#
+# 5. 节点内存水位   process_resident_memory_bytes{job="milvus"} / <节点内存> > 0.85
+#    load 是把数据装进内存的动作，水位是硬约束——超了就是 OOM 重启，然后回到第 3 条。

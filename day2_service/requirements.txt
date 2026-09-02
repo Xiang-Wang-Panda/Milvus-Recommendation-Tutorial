@@ -1,0 +1,11 @@
+fastapi>=0.110
+uvicorn[standard]>=0.27
+pymilvus>=3.0
+milvus-lite>=2.4      # 只有 MILVUS_URI 是本地路径时才用得上；连集群可以不装
+prometheus-client>=0.20  # /metrics
+requests>=2.31        # 只给 seed.py / test_tenant.py / data 加载脚本用
+jieba>=0.42           # TEXT_ANALYZER=chinese 才需要
+
+# Day 2 新增
+sentence-transformers>=2.6  # EMBED_BACKEND=st，正文所有数字都是用它测的
+anthropic>=0.40       # 只有 RERANK=1 做 LLM 精排才需要

@@ -1,0 +1,96 @@
+# Milvus standalone + Attu(GUI) + Prometheus/Grafana(监控)。
+#   docker compose up -d              起 Milvus，服务端口 19530，metrics 在 9091/metrics
+#   docker compose --profile obs up -d  连 Prometheus + Grafana 一起起
+#
+# standalone 是"一个进程里跑齐所有角色"，能扛住量但不能扛住机器挂掉——它是从 Lite
+# 上生产的第一站，不是终点。真要多副本弹性得上 K8s Operator / Helm，那时候变的只是
+# MILVUS_URI 指向哪个 service，服务这边一行代码不改。
+name: day1-milvus
+
+services:
+  etcd:
+    image: quay.io/coreos/etcd:v3.5.16
+    environment:
+      ETCD_AUTO_COMPACTION_MODE: revision
+      ETCD_AUTO_COMPACTION_RETENTION: "1000"
+      ETCD_QUOTA_BACKEND_BYTES: "4294967296"
+      ETCD_SNAPSHOT_COUNT: "50000"
+    volumes:
+      - ./volumes/etcd:/etcd
+    command: etcd -advertise-client-urls=http://127.0.0.1:2379 -listen-client-urls=http://0.0.0.0:2379 --data-dir /etcd
+    healthcheck:
+      test: ["CMD", "etcdctl", "endpoint", "health"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+
+  minio:
+    image: minio/minio:RELEASE.2024-05-28T17-19-04Z
+    environment:
+      MINIO_ACCESS_KEY: minioadmin
+      MINIO_SECRET_KEY: minioadmin
+    ports:
+      - "9001:9001"
+      - "9000:9000"
+    volumes:
+      - ./volumes/minio:/minio_data
+    command: minio server /minio_data --console-address ":9001"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+
+  milvus:
+    image: milvusdb/milvus:v2.5.4
+    command: ["milvus", "run", "standalone"]
+    security_opt:
+      - seccomp:unconfined
+    environment:
+      ETCD_ENDPOINTS: etcd:2379
+      MINIO_ADDRESS: minio:9000
+      # 认证默认是关的，任何人连上就是 root。上生产前把这个打开，配 MILVUS_TOKEN 用。
+      COMMON_SECURITY_AUTHORIZATIONENABLED: "false"
+    volumes:
+      - ./volumes/milvus:/var/lib/milvus
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9091/healthz"]
+      interval: 30s
+      start_period: 90s
+      timeout: 20s
+      retries: 3
+    ports:
+      - "19530:19530"  # 服务端口：MILVUS_URI=http://localhost:19530
+      - "9091:9091"    # /metrics 和 /healthz 都在这儿
+    depends_on:
+      - etcd
+      - minio
+
+  attu:
+    image: zilliz/attu:v2.5
+    environment:
+      MILVUS_URL: milvus:19530
+    ports:
+      - "8001:3000"  # http://localhost:8001 看 collection 状态、索引进度、segment 分布
+    depends_on:
+      - milvus
+
+  prometheus:
+    profiles: ["obs"]
+    image: prom/prometheus:v2.55.1
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "9090:9090"
+
+  grafana:
+    profiles: ["obs"]
+    image: grafana/grafana:11.3.1
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
+    ports:
+      - "3000:3000"  # 导入官方看板 ID 需要联网；离线就直接用 Attu + /metrics
+    depends_on:
+      - prometheus
