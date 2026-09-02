@@ -49,3 +49,6 @@ __pycache__/
 .env.*
 */.env
 */.env.*
+
+# ---- 本地待办,不进 git ----
+TODO.md
